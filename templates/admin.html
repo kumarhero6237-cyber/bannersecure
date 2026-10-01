@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>RAVEN // ADMIN CONTROL</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#020405;color:#eafff9;font-family:Inter,system-ui,sans-serif}
+body:before{content:"";position:fixed;inset:0;pointer-events:none;background:linear-gradient(rgba(0,245,212,.035) 1px,transparent 1px),linear-gradient(90deg,rgba(0,245,212,.025) 1px,transparent 1px);background-size:28px 28px}
+.wrap{width:min(1050px,100%);margin:auto;padding:18px 12px 50px;position:relative;z-index:1}
+.top{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:14px}
+.brand{color:#00f5d4;font:900 12px ui-monospace;letter-spacing:.15em}.online{font:800 9px ui-monospace;color:#49ff88;border:1px solid #194e3d;padding:7px;border-radius:4px}
+.card{background:#070b0c;border:1px solid #153437;border-radius:8px;padding:18px;margin:13px 0;box-shadow:0 18px 60px #000}
+h1{font:900 28px ui-monospace;margin:4px 0 6px}h2{font:900 15px ui-monospace;margin:0 0 12px}.muted{color:#63817d;font:11px/1.6 ui-monospace}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.field label{display:block;color:#62807c;font:800 9px ui-monospace;margin:0 0 6px;letter-spacing:.1em}.field input{width:100%;height:48px;background:#020607;border:1px solid #173638;color:#eafff9;border-radius:4px;padding:0 12px;outline:none;font:13px ui-monospace}.field input:focus{border-color:#00f5d4;box-shadow:0 0 0 2px #00f5d410}
+.btn{height:46px;padding:0 16px;background:#00e4c8;border:1px solid #00f5d4;border-radius:4px;color:#00100e;font:900 10px ui-monospace;cursor:pointer}.btn.secondary{background:#081011;color:#78a09b;border-color:#244143}.btn.danger{background:#18080c;color:#ff7892;border-color:#6e2637}.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.create{margin-top:11px}
+table{width:100%;border-collapse:collapse;font:10px ui-monospace}th,td{text-align:left;padding:10px;border-bottom:1px solid #12282a;vertical-align:middle}th{color:#4d6b67;font-size:8px}td{color:#b8d0cc}code{color:#70b5ac;word-break:break-all}.pill{padding:4px 6px;border-radius:3px;border:1px solid #244143;font-size:8px}.on{color:#49ff88}.off{color:#ff718c}.notice{display:none;margin-top:12px;padding:11px;border:1px solid #20585a;background:#061516;color:#82c9c1;font:10px/1.5 ui-monospace}.notice.show{display:block}.error{color:#ff718c}.login{max-width:440px;margin:80px auto}.login .btn{width:100%;margin-top:10px}.secret{font-size:15px;color:#49ff88}.warn{color:#ffcf69}.empty{text-align:center;color:#46625e;padding:20px}
+@media(max-width:700px){.grid{grid-template-columns:1fr}table{font-size:9px}.hide-mobile{display:none}.wrap{padding:10px 8px 40px}}
+</style></head><body>
+<div class="wrap" id="app"></div>
+<script>
+const app=document.getElementById('app');
+function esc(x){return String(x??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
+async function api(url,opt={}){const r=await fetch(url,{headers:{'Content-Type':'application/json',...(opt.headers||{})},...opt});let d={};try{d=await r.json()}catch{}if(!r.ok)throw new Error(d.error||'Request failed');return d}
+function login(){app.innerHTML=`<section class="card login"><div class="brand">RAVEN // ADMIN CONTROL</div><h1>ADMIN LOGIN</h1><div class="muted">Key generation and domain-lock management.</div><div style="margin-top:16px"><div class="field"><label>ADMIN PASSWORD</label><input id="pw" type="password" placeholder="ENTER ADMIN PASSWORD"></div><button class="btn" onclick="doLogin()">[ UNLOCK PANEL ]</button><div id="msg" class="notice"></div></div></section>`}
+async function doLogin(){try{await api('/admin/login',{method:'POST',body:JSON.stringify({password:document.getElementById('pw').value})});load()}catch(e){const m=document.getElementById('msg');m.textContent=e.message;m.className='notice show error'}}
+async function logout(){await api('/admin/logout',{method:'POST'});login()}
+async function load(){try{const d=await api('/admin/keys');render(d.keys)}catch(e){if(e.message==='Admin login required')return login();app.innerHTML='<section class="card"><h1>ADMIN ERROR</h1><div class="error">'+esc(e.message)+'</div></section>'}}
+function render(keys){app.innerHTML=`<div class="top"><div class="brand">RAVEN // ADMIN CONTROL</div><div class="row"><span class="online">● CONTROL ONLINE</span><button class="btn secondary" onclick="logout()">LOGOUT</button></div></div>
+<section class="card"><h1>KEY MANAGER</h1><div class="muted">Every generated key is bound to exactly one hostname. No domain = no access. Copy the secret when it is created; it is not stored in plaintext.</div>
+<div class="grid" style="margin-top:15px"><div class="field"><label>LABEL</label><input id="label" placeholder="e.g. My Store"></div><div class="field"><label>AUTHORIZED DOMAIN</label><input id="domain" placeholder="example.com"></div></div><div class="row create"><button class="btn" onclick="createKey()">[ GENERATE KEY ]</button><button class="btn secondary" onclick="load()">REFRESH</button></div><div id="notice" class="notice"></div></section>
+<section class="card"><h2>ACTIVE / REVOKED KEYS</h2><div style="overflow:auto"><table><thead><tr><th>LABEL</th><th>DOMAIN</th><th>STATUS</th><th>REQUESTS</th><th>LAST USED</th><th>ACTIONS</th></tr></thead><tbody>${keys.length?keys.map(k=>`<tr><td>${esc(k.label)}</td><td><code>${esc(k.domain)}</code></td><td><span class="pill ${k.enabled?'on':'off'}">${k.enabled?'ENABLED':'DISABLED'}</span></td><td>${esc(k.requests)}</td><td>${esc(k.last_used_at||'—')}</td><td><div class="row"><button class="btn secondary" onclick="toggleKey('${esc(k.id)}')">${k.enabled?'DISABLE':'ENABLE'}</button><button class="btn danger" onclick="deleteKey('${esc(k.id)}')">DELETE</button></div></td></tr>`).join(''):'<tr><td colspan="6" class="empty">NO KEYS GENERATED YET.</td></tr>')}</tbody></table></div></section>
+<section class="card"><h2>DOMAIN LOCK BEHAVIOR</h2><div class="muted">
+<b>Allowed:</b> browser request with Origin/Referer matching the exact configured hostname.<br>
+<b>Blocked:</b> another domain, missing Origin/Referer, disabled key, invalid key.<br>
+<b>Important:</b> browser Origin/Referer headers are not a cryptographic proof of domain ownership. For high-security deployments, keep this API behind HTTPS and consider an external persistent database plus server-side authentication.
+</div></section>`}
+async function createKey(){const domain=document.getElementById('domain').value.trim(),label=document.getElementById('label').value.trim();try{const d=await api('/admin/keys',{method:'POST',body:JSON.stringify({domain,label})});const n=document.getElementById('notice');n.className='notice show';n.innerHTML='<b>NEW KEY — COPY NOW</b><br><span class="secret">'+esc(d.key)+'</span><br><span class="warn">'+esc(d.warning)+'</span>';document.getElementById('domain').value='';document.getElementById('label').value='';setTimeout(load,2500)}catch(e){const n=document.getElementById('notice');n.className='notice show error';n.textContent=e.message}}
+async function toggleKey(id){try{await api('/admin/keys/'+id+'/toggle',{method:'POST'});load()}catch(e){alert(e.message)}}
+async function deleteKey(id){if(!confirm('Delete this API key permanently?'))return;try{await api('/admin/keys/'+id,{method:'DELETE'});load()}catch(e){alert(e.message)}}
+load();
+</script></body></html>
