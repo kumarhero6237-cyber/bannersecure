@@ -7,18 +7,15 @@ import sys
 import base64
 import threading
 import html
-import secrets
-import hashlib
-from datetime import datetime, timezone
-from urllib.parse import urlparse
 from collections import defaultdict
-from flask import Flask, request, jsonify, render_template, Response, session, redirect, url_for
+from flask import Flask, request, jsonify, render_template, Response
 from flask_cors import CORS
 from cachetools import TTLCache
 from typing import Tuple, Optional
 from google.protobuf import json_format
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad as pkcs7_pad
+from access_control import admin_bp, admin_required, authorize
 
 try:
     from proto import FreeFire_pb2, main_pb2, AccountPersonalShow_pb2
@@ -43,140 +40,6 @@ SUPPORTED_REGIONS = {"IND", "BR", "US", "SAC", "NA", "SG", "RU", "ID",
 
 # ✅ JWT API URL — plain text, jaisa original tha
 JWT_API_URL = "https://jwt-auto-srking.vercel.app/token"
-
-# ===============================
-# API KEY + DOMAIN LOCK SYSTEM
-# ===============================
-# Storage is JSON so it works without an external database. On Vercel/serverless,
-# use a persistent external store (or mount/persist this file) for production.
-KEYS_FILE = os.environ.get("API_KEYS_FILE", os.path.join(os.path.dirname(__file__), "api_keys.json"))
-# Admin authentication: password is stored only as a PBKDF2-HMAC-SHA256 hash.
-# The plaintext admin password is NOT present in this source file.
-ADMIN_PASSWORD_SALT = base64.urlsafe_b64decode("oi8jNhk0K_OXJ2xNtA6qRQ==")
-ADMIN_PASSWORD_HASH = base64.urlsafe_b64decode("-e6KkorKIy8DCVCd5ZNCPFOL_t4wM0FUOFAv7jrNx5M=")
-ADMIN_PASSWORD_ITERATIONS = 310000
-
-# Prefer an externally supplied session secret in production; the fallback is a
-# random deployment secret so the project works immediately without exposing a
-# plaintext admin password.
-ADMIN_SESSION_SECRET = os.environ.get("ADMIN_SESSION_SECRET", "aTbcTq1XIcMHq7sIp6EmLKCMQtnbnI2xTI89_hngj9hTex_DIuefw6N7g2Qq3vmG")
-
-def _verify_admin_password(password: str) -> bool:
-    if not password:
-        return False
-    candidate = hashlib.pbkdf2_hmac(
-        "sha256", password.encode("utf-8"), ADMIN_PASSWORD_SALT,
-        ADMIN_PASSWORD_ITERATIONS
-    )
-    return secrets.compare_digest(candidate, ADMIN_PASSWORD_HASH)
-
-def _now_iso():
-    return datetime.now(timezone.utc).isoformat()
-
-def _load_keys():
-    try:
-        with open(KEYS_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        return data if isinstance(data, dict) else {}
-    except Exception:
-        return {}
-
-def _save_keys(data):
-    folder = os.path.dirname(KEYS_FILE)
-    if folder:
-        os.makedirs(folder, exist_ok=True)
-    tmp = KEYS_FILE + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, KEYS_FILE)
-
-def _hash_key(raw):
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
-
-def _normalize_domain(value):
-    value = (value or "").strip()
-    if not value:
-        return ""
-    # Accept https://example.com or example.com, but store hostname only.
-    if "://" not in value:
-        value = "https://" + value
-    try:
-        p = urlparse(value)
-        host = (p.hostname or "").lower().rstrip(".")
-        if not host:
-            return ""
-        # Domain lock is hostname based; no paths/wildcards.
-        if any(ch.isspace() for ch in host) or "/" in host:
-            return ""
-        return host
-    except Exception:
-        return ""
-
-def _request_domain():
-    """
-    Return the browser origin hostname.
-    Origin is preferred. Referer is a fallback for older browsers.
-    No Origin/Referer = no domain => reject. This intentionally prevents
-    server-side/curl calls from using a browser-bound key by default.
-    """
-    origin = request.headers.get("Origin", "").strip()
-    if origin:
-        return _normalize_domain(origin)
-    referer = request.headers.get("Referer", "").strip()
-    if referer:
-        return _normalize_domain(referer)
-    return ""
-
-def _key_record(raw_key):
-    if not raw_key:
-        return None
-    db = _load_keys()
-    return db.get(_hash_key(raw_key))
-
-def _authorize_key():
-    raw = request.args.get("key", "") or request.headers.get("X-API-Key", "")
-    rec = _key_record(raw)
-    if not rec:
-        return False, "Invalid or missing API key"
-    if not rec.get("enabled", True):
-        return False, "API key is disabled"
-
-    domain = _request_domain()
-    allowed = _normalize_domain(rec.get("domain", ""))
-    if not allowed:
-        return False, "This API key has no authorized domain"
-    if not domain:
-        return False, "Domain required: send the request from the authorized website"
-    if domain != allowed:
-        return False, f"Domain not authorized for this API key"
-
-    # Usage stats
-    db = _load_keys()
-    h = _hash_key(raw)
-    if h in db:
-        db[h]["requests"] = int(db[h].get("requests", 0)) + 1
-        db[h]["last_used_at"] = _now_iso()
-        db[h]["last_domain"] = domain
-        try:
-            _save_keys(db)
-        except Exception as e:
-            print(f"[KEYS] usage save failed: {e}")
-    return True, rec
-
-def _admin_enabled():
-    return bool(ADMIN_PASSWORD_HASH and ADMIN_SESSION_SECRET)
-
-def _admin_required():
-    if not _admin_enabled():
-        return False, ("Admin panel is disabled. Set ADMIN_PASSWORD and "
-                       "ADMIN_SESSION_SECRET environment variables.")
-    if not session.get("admin_ok"):
-        return False, "Admin login required"
-    return True, None
-
-def _generate_api_key():
-    return "RAVEN-" + secrets.token_urlsafe(28).replace("-", "").replace("_", "")
-
 
 def _server_for_region(region: str) -> str:
     r = region.upper()
@@ -259,8 +122,8 @@ JWT_REGIONS = ["IND", "BD", "ME", "BR"]
 # Flask setup
 # ===============================
 app = Flask(__name__)
-app.secret_key = ADMIN_SESSION_SECRET or secrets.token_hex(32)
-CORS(app)
+CORS(app, resources={r"/uc-*": {"origins": "*"}})
+app.register_blueprint(admin_bp)
 cached_tokens = defaultdict(dict)
 _item_cache = TTLCache(maxsize=2048, ttl=3600)
 
@@ -668,18 +531,14 @@ async def fetch_player_info(uid):
                 print(f"[{region}] guest #{guest_index} failed: {e}")
     return None
 
-def require_api_key():
-    ok, _ = _authorize_key()
-    return ok
-
-
 # ===============================
 # Routes
 # ===============================
 @app.route("/uc-info")
 def get_account_info():
-    if not require_api_key():
-        return jsonify({"error": "Invalid or missing API key"}), 401
+    _rec, deny = authorize()
+    if deny:
+        return deny
 
     uid = (request.args.get("uid") or "").strip()
     if not uid:
@@ -694,8 +553,9 @@ def get_account_info():
 @app.route("/uc-main")
 def get_main():
     """Combined endpoint: one player lookup, then banner from that same JSON."""
-    if not require_api_key():
-        return jsonify({"error": "Invalid or missing API key"}), 401
+    _rec, deny = authorize()
+    if deny:
+        return deny
 
     uid = (request.args.get("uid") or "").strip()
     if not uid:
@@ -757,8 +617,9 @@ h1{font:800 22px system-ui;margin:0}.ok{color:#42f5ad;font:700 12px system-ui}.c
 
 @app.route("/uc-banner", methods=["GET", "POST"])
 def get_banner():
-    if not require_api_key():
-        return jsonify({"error": "Invalid or missing API key"}), 401
+    _rec, deny = authorize()
+    if deny:
+        return deny
 
     try:
         if request.method == "POST":
@@ -789,119 +650,8 @@ def get_banner():
         return jsonify({"error": "Banner generation failed", "details": str(e)}), 500
 
 
-
-# ===============================
-# ADMIN PANEL
-# ===============================
-@app.route("/admin", methods=["GET"])
-def admin_page():
-    if not _admin_enabled():
-        return Response(
-            "<h2>Admin disabled</h2><p>Set ADMIN_PASSWORD and ADMIN_SESSION_SECRET.</p>",
-            status=503, mimetype="text/html"
-        )
-    if not session.get("admin_ok"):
-        return render_template("admin.html", logged_in=False)
-    return render_template("admin.html", logged_in=True)
-
-@app.route("/admin/login", methods=["POST"])
-def admin_login():
-    if not _admin_enabled():
-        return jsonify({"error": "Admin is disabled. Configure ADMIN_PASSWORD and ADMIN_SESSION_SECRET."}), 503
-    payload = request.get_json(silent=True) or {}
-    password = str(payload.get("password", ""))
-    if not _verify_admin_password(password):
-        return jsonify({"error": "Invalid admin password"}), 401
-    session.clear()
-    session["admin_ok"] = True
-    session.permanent = False
-    return jsonify({"status": "ok"})
-
-@app.route("/admin/logout", methods=["POST"])
-def admin_logout():
-    session.clear()
-    return jsonify({"status": "ok"})
-
-@app.route("/admin/keys", methods=["GET"])
-def admin_list_keys():
-    ok, err = _admin_required()
-    if not ok:
-        return jsonify({"error": err}), 401 if err == "Admin login required" else 503
-    db = _load_keys()
-    items = []
-    for h, rec in db.items():
-        item = dict(rec)
-        item["id"] = h[:12]
-        item.pop("key_hash", None)
-        # Never return the full secret after creation.
-        items.append(item)
-    items.sort(key=lambda x: x.get("created_at", ""), reverse=True)
-    return jsonify({"keys": items})
-
-@app.route("/admin/keys", methods=["POST"])
-def admin_create_key():
-    ok, err = _admin_required()
-    if not ok:
-        return jsonify({"error": err}), 401 if err == "Admin login required" else 503
-
-    payload = request.get_json(silent=True) or {}
-    domain = _normalize_domain(payload.get("domain", ""))
-    label = str(payload.get("label", "")).strip()[:80]
-    if not domain:
-        return jsonify({"error": "A valid domain is required. Example: example.com"}), 400
-
-    db = _load_keys()
-    raw = _generate_api_key()
-    h = _hash_key(raw)
-    db[h] = {
-        "label": label or "Unnamed",
-        "domain": domain,
-        "enabled": True,
-        "created_at": _now_iso(),
-        "requests": 0,
-        "last_used_at": None,
-        "last_domain": None
-    }
-    try:
-        _save_keys(db)
-    except Exception as e:
-        return jsonify({"error": f"Could not save key: {e}"}), 500
-
-    # Full key is shown only once in this response.
-    return jsonify({
-        "status": "created",
-        "key": raw,
-        "domain": domain,
-        "warning": "Copy this key now. The full key is not shown again."
-    }), 201
-
-@app.route("/admin/keys/<key_id>/toggle", methods=["POST"])
-def admin_toggle_key(key_id):
-    ok, err = _admin_required()
-    if not ok:
-        return jsonify({"error": err}), 401 if err == "Admin login required" else 503
-    db = _load_keys()
-    target = next((h for h in db if h.startswith(key_id)), None)
-    if not target:
-        return jsonify({"error": "Key not found"}), 404
-    db[target]["enabled"] = not bool(db[target].get("enabled", True))
-    _save_keys(db)
-    return jsonify({"status": "ok", "enabled": db[target]["enabled"]})
-
-@app.route("/admin/keys/<key_id>", methods=["DELETE"])
-def admin_delete_key(key_id):
-    ok, err = _admin_required()
-    if not ok:
-        return jsonify({"error": err}), 401 if err == "Admin login required" else 503
-    db = _load_keys()
-    target = next((h for h in db if h.startswith(key_id)), None)
-    if not target:
-        return jsonify({"error": "Key not found"}), 404
-    del db[target]
-    _save_keys(db)
-    return jsonify({"status": "deleted"})
-
 @app.route("/refresh", methods=["GET", "POST"])
+@admin_required
 def refresh_tokens_endpoint():
     try:
         run_async(initialize_tokens())
@@ -911,6 +661,7 @@ def refresh_tokens_endpoint():
 
 
 @app.route("/status")
+@admin_required
 def token_status():
     status = {}
     for key, info in cached_tokens.items():
