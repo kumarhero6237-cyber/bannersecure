@@ -24,15 +24,30 @@ function login(){app.innerHTML=`<section class="card login"><div class="brand">R
 async function doLogin(){try{await api('/admin/login',{method:'POST',body:JSON.stringify({password:document.getElementById('pw').value})});load()}catch(e){const m=document.getElementById('msg');m.textContent=e.message;m.className='notice show error'}}
 async function logout(){await api('/admin/logout',{method:'POST'});login()}
 async function load(){try{const d=await api('/admin/keys');render(d.keys)}catch(e){if(e.message==='Admin login required')return login();app.innerHTML='<section class="card"><h1>ADMIN ERROR</h1><div class="error">'+esc(e.message)+'</div></section>'}}
-function render(keys){app.innerHTML=`<div class="top"><div class="brand">RAVEN // ADMIN CONTROL</div><div class="row"><span class="online">● CONTROL ONLINE</span><button class="btn secondary" onclick="logout()">LOGOUT</button></div></div>
-<section class="card"><h1>KEY MANAGER</h1><div class="muted">Every generated key is bound to exactly one hostname. No domain = no access. Copy the secret when it is created; it is not stored in plaintext.</div>
-<div class="grid" style="margin-top:15px"><div class="field"><label>LABEL</label><input id="label" placeholder="e.g. My Store"></div><div class="field"><label>AUTHORIZED DOMAIN</label><input id="domain" placeholder="example.com"></div></div><div class="row create"><button class="btn" onclick="createKey()">[ GENERATE KEY ]</button><button class="btn secondary" onclick="load()">REFRESH</button></div><div id="notice" class="notice"></div></section>
-<section class="card"><h2>ACTIVE / REVOKED KEYS</h2><div style="overflow:auto"><table><thead><tr><th>LABEL</th><th>DOMAIN</th><th>STATUS</th><th>REQUESTS</th><th>LAST USED</th><th>ACTIONS</th></tr></thead><tbody>${keys.length?keys.map(k=>`<tr><td>${esc(k.label)}</td><td><code>${esc(k.domain)}</code></td><td><span class="pill ${k.enabled?'on':'off'}">${k.enabled?'ENABLED':'DISABLED'}</span></td><td>${esc(k.requests)}</td><td>${esc(k.last_used_at||'—')}</td><td><div class="row"><button class="btn secondary" onclick="toggleKey('${esc(k.id)}')">${k.enabled?'DISABLE':'ENABLE'}</button><button class="btn danger" onclick="deleteKey('${esc(k.id)}')">DELETE</button></div></td></tr>`).join(''):'<tr><td colspan="6" class="empty">NO KEYS GENERATED YET.</td></tr>')}</tbody></table></div></section>
-<section class="card"><h2>DOMAIN LOCK BEHAVIOR</h2><div class="muted">
-<b>Allowed:</b> browser request with Origin/Referer matching the exact configured hostname.<br>
-<b>Blocked:</b> another domain, missing Origin/Referer, disabled key, invalid key.<br>
-<b>Important:</b> browser Origin/Referer headers are not a cryptographic proof of domain ownership. For high-security deployments, keep this API behind HTTPS and consider an external persistent database plus server-side authentication.
-</div></section>`}
+function render(keys){
+  const rows = keys.length ? keys.map(k => {
+    const status = k.enabled ? 'ENABLED' : 'DISABLED';
+    const statusClass = k.enabled ? 'on' : 'off';
+    const action = k.enabled ? 'DISABLE' : 'ENABLE';
+    return '<tr>'
+      + '<td>' + esc(k.label) + '</td>'
+      + '<td><code>' + esc(k.domain) + '</code></td>'
+      + '<td><span class="pill ' + statusClass + '">' + status + '</span></td>'
+      + '<td>' + esc(k.requests) + '</td>'
+      + '<td>' + esc(k.last_used_at || '—') + '</td>'
+      + '<td><div class="row">'
+      + '<button class="btn secondary" onclick="toggleKey(\'' + esc(k.id) + '\')">' + action + '</button>'
+      + '<button class="btn danger" onclick="deleteKey(\'' + esc(k.id) + '\')">DELETE</button>'
+      + '</div></td></tr>';
+  }).join('') : '<tr><td colspan="6" class="empty">NO KEYS GENERATED YET.</td></tr>';
+
+  app.innerHTML = '<div class="top"><div class="brand">RAVEN // ADMIN CONTROL</div><div class="row"><span class="online">● CONTROL ONLINE</span><button class="btn secondary" onclick="logout()">LOGOUT</button></div></div>'
+    + '<section class="card"><h1>KEY MANAGER</h1><div class="muted">Every generated key is bound to exactly one hostname. No domain = no access. Copy the secret when it is created; it is not stored in plaintext.</div>'
+    + '<div class="grid" style="margin-top:15px"><div class="field"><label>LABEL</label><input id="label" placeholder="e.g. My Store"></div><div class="field"><label>AUTHORIZED DOMAIN</label><input id="domain" placeholder="example.com"></div></div>'
+    + '<div class="row create"><button class="btn" onclick="createKey()">[ GENERATE KEY ]</button><button class="btn secondary" onclick="load()">REFRESH</button></div><div id="notice" class="notice"></div></section>'
+    + '<section class="card"><h2>ACTIVE / REVOKED KEYS</h2><div style="overflow:auto"><table><thead><tr><th>LABEL</th><th>DOMAIN</th><th>STATUS</th><th>REQUESTS</th><th>LAST USED</th><th>ACTIONS</th></tr></thead><tbody>' + rows + '</tbody></table></div></section>'
+    + '<section class="card"><h2>DOMAIN LOCK BEHAVIOR</h2><div class="muted"><b>Allowed:</b> browser request with Origin/Referer matching the exact configured hostname.<br><b>Blocked:</b> another domain, missing Origin/Referer, disabled key, invalid key.<br><b>Important:</b> browser Origin/Referer headers are not a cryptographic proof of domain ownership. For high-security deployments, keep this API behind HTTPS and consider an external persistent database plus server-side authentication.</div></section>';
+}
 async function createKey(){const domain=document.getElementById('domain').value.trim(),label=document.getElementById('label').value.trim();try{const d=await api('/admin/keys',{method:'POST',body:JSON.stringify({domain,label})});const n=document.getElementById('notice');n.className='notice show';n.innerHTML='<b>NEW KEY — COPY NOW</b><br><span class="secret">'+esc(d.key)+'</span><br><span class="warn">'+esc(d.warning)+'</span>';document.getElementById('domain').value='';document.getElementById('label').value='';setTimeout(load,2500)}catch(e){const n=document.getElementById('notice');n.className='notice show error';n.textContent=e.message}}
 async function toggleKey(id){try{await api('/admin/keys/'+id+'/toggle',{method:'POST'});load()}catch(e){alert(e.message)}}
 async function deleteKey(id){if(!confirm('Delete this API key permanently?'))return;try{await api('/admin/keys/'+id,{method:'DELETE'});load()}catch(e){alert(e.message)}}
